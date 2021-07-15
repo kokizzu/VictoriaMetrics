@@ -218,7 +218,7 @@ See [this article](https://medium.com/@valyala/speeding-up-backups-for-big-time-
   -snapshot.createURL string
     	VictoriaMetrics create snapshot url. When this is given a snapshot will automatically be created during backup. Example: http://victoriametrics:8428/snapshot/create . There is no need in setting -snapshotName if -snapshot.createURL is set
   -snapshot.deleteURL string
-    	VictoriaMetrics delete snapshot url. Optional. Will be generated from -snapshot.createURL if not provided. All created snaphosts will be automatically deleted. Example: http://victoriametrics:8428/snapshot/delete
+    	VictoriaMetrics delete snapshot url. Optional. Will be generated from -snapshot.createURL if not provided. All created snapshots will be automatically deleted. Example: http://victoriametrics:8428/snapshot/delete
   -snapshotName string
     	Name for the snapshot to backup. See https://docs.victoriametrics.com/Single-server-VictoriaMetrics.html#how-to-work-with-snapshots. There is no need in setting -snapshotName if -snapshot.createURL is set
   -storageDataPath string
@@ -235,7 +235,7 @@ It is recommended using [binary releases](https://github.com/VictoriaMetrics/Vic
 
 ### Development build
 
-1. [Install Go](https://golang.org/doc/install). The minimum supported version is Go 1.15.
+1. [Install Go](https://golang.org/doc/install). The minimum supported version is Go 1.16.
 2. Run `make vmbackup` from the root folder of [the repository](https://github.com/VictoriaMetrics/VictoriaMetrics).
    It builds `vmbackup` binary and puts it into the `bin` folder.
 

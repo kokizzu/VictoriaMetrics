@@ -1099,6 +1099,9 @@ func (c *HostClient) doNonNilReqResp(req *Request, resp *Response) (bool, error)
 
 	br := c.acquireReader(conn)
 	if err = resp.ReadLimitBody(br, c.MaxResponseBodySize); err != nil {
+		if err == io.EOF && time.Since(cc.createdTime) < time.Second {
+			err = io.ErrUnexpectedEOF
+		}
 		c.releaseReader(br)
 		c.closeConn(cc)
 		return true, err
@@ -1313,34 +1316,7 @@ func newClientTLSConfig(c *tls.Config, addr string) *tls.Config {
 	if c == nil {
 		c = &tls.Config{}
 	} else {
-		// TODO: substitute this with c.Clone() after go1.8 becomes mainstream :)
-		c = &tls.Config{
-			Rand:              c.Rand,
-			Time:              c.Time,
-			Certificates:      c.Certificates,
-			NameToCertificate: c.NameToCertificate,
-			GetCertificate:    c.GetCertificate,
-			RootCAs:           c.RootCAs,
-			NextProtos:        c.NextProtos,
-			ServerName:        c.ServerName,
-
-			// Do not copy ClientAuth, since it is server-related stuff
-			// Do not copy ClientCAs, since it is server-related stuff
-
-			InsecureSkipVerify: c.InsecureSkipVerify,
-			CipherSuites:       c.CipherSuites,
-
-			// Do not copy PreferServerCipherSuites - this is server stuff
-
-			SessionTicketsDisabled: c.SessionTicketsDisabled,
-
-			// Do not copy SessionTicketKey - this is server stuff
-
-			ClientSessionCache: c.ClientSessionCache,
-			MinVersion:         c.MinVersion,
-			MaxVersion:         c.MaxVersion,
-			CurvePreferences:   c.CurvePreferences,
-		}
+		c = c.Clone()
 	}
 
 	if c.ClientSessionCache == nil {

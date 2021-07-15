@@ -25,7 +25,6 @@ import (
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/logger"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/storage"
 	"github.com/VictoriaMetrics/metrics"
-	"github.com/VictoriaMetrics/metricsql"
 	"github.com/valyala/fastjson/fastfloat"
 	"github.com/valyala/quicktemplate"
 )
@@ -34,7 +33,7 @@ var (
 	latencyOffset = flag.Duration("search.latencyOffset", time.Second*30, "The time when data points become visible in query results after the collection. "+
 		"Too small value can result in incomplete last points for query results")
 	maxQueryLen = flagutil.NewBytes("search.maxQueryLen", 16*1024, "The maximum search query length in bytes")
-	maxLookback = flag.Duration("search.maxLookback", 0, "Synonim to -search.lookback-delta from Prometheus. "+
+	maxLookback = flag.Duration("search.maxLookback", 0, "Synonym to -search.lookback-delta from Prometheus. "+
 		"The value is dynamically detected from interval between time series datapoints if not set. It can be overridden on per-query basis via max_lookback arg. "+
 		"See also '-search.maxStalenessInterval' flag, which has the same meaining due to historical reasons")
 	maxStalenessInterval = flag.Duration("search.maxStalenessInterval", 0, "The maximum interval for staleness calculations. "+
@@ -633,11 +632,19 @@ const secsPerDay = 3600 * 24
 // TSDBStatusHandler processes /api/v1/status/tsdb request.
 //
 // See https://prometheus.io/docs/prometheus/latest/querying/api/#tsdb-stats
+//
+// It can accept `match[]` filters in order to narrow down the search.
 func TSDBStatusHandler(startTime time.Time, w http.ResponseWriter, r *http.Request) error {
 	deadline := searchutils.GetDeadlineForStatusRequest(r, startTime)
 	if err := r.ParseForm(); err != nil {
 		return fmt.Errorf("cannot parse form values: %w", err)
 	}
+	etf, err := searchutils.GetEnforcedTagFiltersFromRequest(r)
+	if err != nil {
+		return err
+	}
+	matches := getMatchesFromRequest(r)
+
 	date := fasttime.UnixDate()
 	dateStr := r.FormValue("date")
 	if len(dateStr) > 0 {
@@ -662,9 +669,17 @@ func TSDBStatusHandler(startTime time.Time, w http.ResponseWriter, r *http.Reque
 		}
 		topN = n
 	}
-	status, err := netstorage.GetTSDBStatusForDate(deadline, date, topN)
-	if err != nil {
-		return fmt.Errorf(`cannot obtain tsdb status for date=%d, topN=%d: %w`, date, topN, err)
+	var status *storage.TSDBStatus
+	if len(matches) == 0 && len(etf) == 0 {
+		status, err = netstorage.GetTSDBStatusForDate(deadline, date, topN)
+		if err != nil {
+			return fmt.Errorf(`cannot obtain tsdb status for date=%d, topN=%d: %w`, date, topN, err)
+		}
+	} else {
+		status, err = tsdbStatusWithMatches(matches, etf, date, topN, deadline)
+		if err != nil {
+			return fmt.Errorf("cannot obtain tsdb status with matches for date=%d, topN=%d: %w", date, topN, err)
+		}
 	}
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	bw := bufferedwriter.Get(w)
@@ -675,6 +690,25 @@ func TSDBStatusHandler(startTime time.Time, w http.ResponseWriter, r *http.Reque
 	}
 	tsdbStatusDuration.UpdateDuration(startTime)
 	return nil
+}
+
+func tsdbStatusWithMatches(matches []string, etf []storage.TagFilter, date uint64, topN int, deadline searchutils.Deadline) (*storage.TSDBStatus, error) {
+	tagFilterss, err := getTagFilterssFromMatches(matches)
+	if err != nil {
+		return nil, err
+	}
+	tagFilterss = addEnforcedFiltersToTagFilterss(tagFilterss, etf)
+	if len(tagFilterss) == 0 {
+		logger.Panicf("BUG: tagFilterss must be non-empty")
+	}
+	start := int64(date*secsPerDay) * 1000
+	end := int64(date*secsPerDay+secsPerDay) * 1000
+	sq := storage.NewSearchQuery(start, end, tagFilterss)
+	status, err := netstorage.GetTSDBStatusWithFilters(deadline, sq, topN)
+	if err != nil {
+		return nil, err
+	}
+	return status, nil
 }
 
 var tsdbStatusDuration = metrics.NewSummary(`vm_request_duration_seconds{path="/api/v1/status/tsdb"}`)
@@ -956,15 +990,9 @@ func QueryHandler(startTime time.Time, w http.ResponseWriter, r *http.Request) e
 	if err != nil {
 		return err
 	}
-	if childQuery, windowStr, offsetStr := promql.IsMetricSelectorWithRollup(query); childQuery != "" {
-		window, err := parsePositiveDuration(windowStr, step)
-		if err != nil {
-			return fmt.Errorf("cannot parse window: %w", err)
-		}
-		offset, err := parseDuration(offsetStr, step)
-		if err != nil {
-			return fmt.Errorf("cannot parse offset: %w", err)
-		}
+	if childQuery, windowExpr, offsetExpr := promql.IsMetricSelectorWithRollup(query); childQuery != "" {
+		window := windowExpr.Duration(step)
+		offset := offsetExpr.Duration(step)
 		start -= offset
 		end := start
 		start = end - window
@@ -979,22 +1007,13 @@ func QueryHandler(startTime time.Time, w http.ResponseWriter, r *http.Request) e
 		queryDuration.UpdateDuration(startTime)
 		return nil
 	}
-	if childQuery, windowStr, stepStr, offsetStr := promql.IsRollup(query); childQuery != "" {
-		newStep, err := parsePositiveDuration(stepStr, step)
-		if err != nil {
-			return fmt.Errorf("cannot parse step: %w", err)
-		}
+	if childQuery, windowExpr, stepExpr, offsetExpr := promql.IsRollup(query); childQuery != "" {
+		newStep := stepExpr.Duration(step)
 		if newStep > 0 {
 			step = newStep
 		}
-		window, err := parsePositiveDuration(windowStr, step)
-		if err != nil {
-			return fmt.Errorf("cannot parse window: %w", err)
-		}
-		offset, err := parseDuration(offsetStr, step)
-		if err != nil {
-			return fmt.Errorf("cannot parse offset: %w", err)
-		}
+		window := windowExpr.Duration(step)
+		offset := offsetExpr.Duration(step)
 		start -= offset
 		end := start
 		start = end - window
@@ -1050,20 +1069,6 @@ func QueryHandler(startTime time.Time, w http.ResponseWriter, r *http.Request) e
 }
 
 var queryDuration = metrics.NewSummary(`vm_request_duration_seconds{path="/api/v1/query"}`)
-
-func parseDuration(s string, step int64) (int64, error) {
-	if len(s) == 0 {
-		return 0, nil
-	}
-	return metricsql.DurationValue(s, step)
-}
-
-func parsePositiveDuration(s string, step int64) (int64, error) {
-	if len(s) == 0 {
-		return 0, nil
-	}
-	return metricsql.PositiveDurationValue(s, step)
-}
 
 // QueryRangeHandler processes /api/v1/query_range request.
 //

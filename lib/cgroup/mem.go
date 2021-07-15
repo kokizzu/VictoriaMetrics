@@ -1,8 +1,38 @@
 package cgroup
 
 import (
+	"os"
+	"runtime/debug"
 	"strconv"
 )
+
+// GetGOGC returns GOGC value for the currently running process.
+//
+// See https://golang.org/pkg/runtime/#hdr-Environment_Variables for more details about GOGC
+func GetGOGC() int {
+	return gogc
+}
+
+func init() {
+	initGOGC()
+}
+
+func initGOGC() {
+	if v := os.Getenv("GOGC"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil {
+			n = 100
+		}
+		gogc = n
+	} else {
+		// Set GOGC to 50% by default if it isn't set yet.
+		// This should reduce memory usage for typical workloads for VictoriaMetrics components.
+		gogc = 50
+		debug.SetGCPercent(gogc)
+	}
+}
+
+var gogc int
 
 // GetMemoryLimit returns cgroup memory limit
 func GetMemoryLimit() int64 {
@@ -13,10 +43,19 @@ func GetMemoryLimit() int64 {
 	// This should properly determine the limit inside lxc container.
 	// See https://github.com/VictoriaMetrics/VictoriaMetrics/issues/84
 	n, err := getMemStat("memory.limit_in_bytes")
+	if err == nil {
+		return n
+	}
+	n, err = getMemStatV2("memory.max")
 	if err != nil {
 		return 0
 	}
 	return n
+}
+
+func getMemStatV2(statName string) (int64, error) {
+	// See https: //www.kernel.org/doc/html/latest/admin-guide/cgroup-v2.html#memory-interface-files
+	return getStatGeneric(statName, "/sys/fs/cgroup", "/proc/self/cgroup", "")
 }
 
 func getMemStat(statName string) (int64, error) {

@@ -7,10 +7,57 @@ import (
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/prompbmarshal"
 )
 
+func TestLabelsToString(t *testing.T) {
+	f := func(labels []prompbmarshal.Label, sExpected string) {
+		t.Helper()
+		s := labelsToString(labels)
+		if s != sExpected {
+			t.Fatalf("unexpected result;\ngot\n%s\nwant\n%s", s, sExpected)
+		}
+	}
+	f(nil, "{}")
+	f([]prompbmarshal.Label{
+		{
+			Name:  "__name__",
+			Value: "foo",
+		},
+	}, "foo")
+	f([]prompbmarshal.Label{
+		{
+			Name:  "foo",
+			Value: "bar",
+		},
+	}, `{foo="bar"}`)
+	f([]prompbmarshal.Label{
+		{
+			Name:  "foo",
+			Value: "bar",
+		},
+		{
+			Name:  "a",
+			Value: "bc",
+		},
+	}, `{a="bc",foo="bar"}`)
+	f([]prompbmarshal.Label{
+		{
+			Name:  "foo",
+			Value: "bar",
+		},
+		{
+			Name:  "__name__",
+			Value: "xxx",
+		},
+		{
+			Name:  "a",
+			Value: "bc",
+		},
+	}, `xxx{a="bc",foo="bar"}`)
+}
+
 func TestApplyRelabelConfigs(t *testing.T) {
 	f := func(config string, labels []prompbmarshal.Label, isFinalize bool, resultExpected []prompbmarshal.Label) {
 		t.Helper()
-		pcs, err := ParseRelabelConfigsData([]byte(config))
+		pcs, err := ParseRelabelConfigsData([]byte(config), false)
 		if err != nil {
 			t.Fatalf("cannot parse %q: %s", config, err)
 		}
@@ -168,6 +215,56 @@ func TestApplyRelabelConfigs(t *testing.T) {
 			{
 				Name:  "foo",
 				Value: "yyy",
+			},
+		})
+	})
+	t.Run("replace-hit-remove-label", func(t *testing.T) {
+		f(`
+- action: replace
+  source_labels: ["xxx", "foo"]
+  regex: "yyy;.+"
+  target_label: "foo"
+  replacement: ""
+`, []prompbmarshal.Label{
+			{
+				Name:  "xxx",
+				Value: "yyy",
+			},
+			{
+				Name:  "foo",
+				Value: "bar",
+			},
+		}, false, []prompbmarshal.Label{
+			{
+				Name:  "xxx",
+				Value: "yyy",
+			},
+		})
+	})
+	t.Run("replace-miss-remove-label", func(t *testing.T) {
+		f(`
+- action: replace
+  source_labels: ["xxx", "foo"]
+  regex: "yyy;.+"
+  target_label: "foo"
+  replacement: ""
+`, []prompbmarshal.Label{
+			{
+				Name:  "xxx",
+				Value: "yyyz",
+			},
+			{
+				Name:  "foo",
+				Value: "bar",
+			},
+		}, false, []prompbmarshal.Label{
+			{
+				Name:  "foo",
+				Value: "bar",
+			},
+			{
+				Name:  "xxx",
+				Value: "yyyz",
 			},
 		})
 	})
